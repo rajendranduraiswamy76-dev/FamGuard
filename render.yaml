@@ -1,0 +1,105 @@
+# Render Blueprint for FamGuard AI.
+#
+# Default (free tier): one Docker web service running RUN_MODE=combined (uvicorn + Celery worker).
+# Render free web services sleep when idle and Background Workers are paid-only, so the
+# midnight sweep is triggered by .github/workflows/cron-expiry-sweep.yml instead of Celery Beat.
+#
+# Deploys are gated by CI: autoDeploy is off and the `deploy` job in .github/workflows/ci.yml
+# calls this service's deploy hook (secret RENDER_DEPLOY_HOOK_URL) after all checks pass.
+#
+# Values marked `sync: false` are entered once in the Render dashboard when the Blueprint
+# is first applied; they are never stored in git.
+
+services:
+  - type: web
+    name: famguard-api
+    runtime: docker
+    plan: free
+    # Close to Supabase/Pinecone us-east-1.
+    region: virginia
+    dockerfilePath: ./infrastructure/docker/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    autoDeploy: false
+    envVars:
+      - key: ENV
+        value: prod
+      - key: RUN_MODE
+        value: combined
+      - key: MIGRATE_ON_START
+        value: "1"
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: CELERY_POOL
+        value: solo
+      - key: CELERY_CONCURRENCY
+        value: "1"
+      - key: CELERY_TIMEZONE
+        value: UTC
+      - key: LOG_LEVEL
+        value: INFO
+      - key: PINECONE_INDEX
+        value: famguard-vault
+      - key: PINECONE_NAMESPACE
+        value: family-vault
+      - key: R2_BUCKET
+        value: famguard-vault
+      - key: ALERT_DAILY_SEND_CAP
+        value: "95"
+      # Supabase session pooler (port 5432), e.g. postgresql://postgres.<ref>:<pw>@aws-0-us-east-1.pooler.supabase.com:5432/postgres
+      - key: DATABASE_URL
+        sync: false
+      # Redis Cloud free database, rediss://default:<pw>@<host>:<port>/0
+      - key: REDIS_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PINECONE_API_KEY
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: CLERK_ISSUER
+        sync: false
+      # Comma-separated, e.g. https://famguard.vercel.app
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      # e.g. FamGuard <alerts@yourdomain.com> (domain verified in Resend)
+      - key: ALERT_FROM_EMAIL
+        sync: false
+      # Must equal the CRON_SECRET GitHub Actions secret.
+      - key: CRON_SECRET
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # Paid layout (spec target): uncomment to split API and worker + enable Celery Beat,
+  # then change famguard-api to RUN_MODE=api and disable the GitHub cron workflow.
+  # ---------------------------------------------------------------------------
+  # - type: worker
+  #   name: famguard-worker
+  #   runtime: docker
+  #   plan: starter
+  #   region: virginia
+  #   dockerfilePath: ./infrastructure/docker/Dockerfile
+  #   dockerContext: .
+  #   autoDeploy: false
+  #   envVars:
+  #     - key: ENV
+  #       value: prod
+  #     - key: RUN_MODE
+  #       value: worker
+  #     - key: WORKER_BEAT
+  #       value: "1"
+  #     - fromService:
+  #         type: web
+  #         name: famguard-api
+  #         envVarKey: DATABASE_URL
+  #       key: DATABASE_URL
+  #     # ...repeat fromService for the remaining secrets

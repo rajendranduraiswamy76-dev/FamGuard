@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "famguard-api"
+version = "0.1.0"
+description = "FamGuard AI - Life Vault API (FastAPI + LangGraph)"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.32",
+  "python-multipart>=0.0.12",
+  "pydantic[email]>=2.9,<3",
+  "pydantic-settings>=2.7,<3",
+  "asyncpg>=0.30",
+  "psycopg[binary,pool]>=3.2",
+  "langgraph>=0.2.60",
+  "langgraph-checkpoint-postgres>=2.0",
+  "langchain-openai>=0.2.14",
+  "langchain-core>=0.3.28",
+  "pinecone>=10.2,<11",
+  "boto3>=1.35",
+  "pypdfium2>=4.30",
+  "pillow>=11.0",
+  "pillow-heif>=0.20",
+  "python-docx>=1.1",
+  "openpyxl>=3.1",
+  "openai>=1.60",
+  "tiktoken>=0.8",
+  "PyJWT[crypto]>=2.10",
+  "slowapi>=0.1.9",
+  "celery[redis]>=5.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "pytest-cov>=6.0",
+  "httpx>=0.28",
+  "respx>=0.21",
+  "moto[s3]>=5.0",
+  "fakeredis>=2.26",
+  "freezegun>=1.5",
+  "ruff>=0.8",
+  "mypy>=1.13",
+  "asyncpg-stubs>=0.30",
+  "types-openpyxl>=3.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "integration: requires a real Postgres (set TEST_DATABASE_URL)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+packages = ["app"]
+
+[[tool.mypy.overrides]]
+module = ["pypdfium2", "pypdfium2.*", "boto3", "boto3.*", "botocore", "botocore.*", "celery",
+          "celery.*"]
+ignore_missing_imports = true

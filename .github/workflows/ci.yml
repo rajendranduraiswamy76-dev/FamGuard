@@ -1,0 +1,290 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.11"
+  TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/famguard
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      worker: ${{ steps.filter.outputs.worker }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      image: ${{ steps.filter.outputs.image }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend-api/**'
+              - '.github/workflows/ci.yml'
+            worker:
+              - 'backend-api/**'
+              - 'worker/**'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'frontend/**'
+              - 'backend-api/openapi.json'
+              - '.github/workflows/ci.yml'
+            image:
+              - 'backend-api/**'
+              - 'worker/**'
+              - 'infrastructure/docker/**'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
+            infra:
+              - 'infrastructure/**'
+              - '.github/workflows/**'
+
+  secrets-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  backend:
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: famguard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d famguard"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    defaults:
+      run:
+        working-directory: backend-api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend-api/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: ruff check app tests
+      - run: mypy
+      - run: python scripts/export_openapi.py
+      - run: git diff --exit-code -- openapi.json
+      - run: pytest -q --cov=app --cov-report=term --cov-report=xml --cov-fail-under=80
+
+  worker:
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: famguard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d famguard"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            backend-api/pyproject.toml
+            worker/pyproject.toml
+      - run: pip install -e "../backend-api" -e ".[dev]"
+      - run: ruff check famguard_worker tests
+      - run: mypy
+      - run: pytest -q --cov=famguard_worker --cov-report=term --cov-fail-under=80
+
+  infra:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Cron trigger script tests
+        working-directory: infrastructure
+        run: |
+          pip install pytest
+          python -m pytest -q
+      - name: Lint workflows
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.7 -color .github/workflows/*.yml
+      - name: Shellcheck entrypoint
+        run: shellcheck infrastructure/docker/entrypoint.sh
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    env:
+      # Test auth mode bypasses Clerk; every API call is mocked (MSW in Vitest, page.route in Playwright).
+      NEXT_PUBLIC_API_BASE_URL: http://api.test
+      NEXT_PUBLIC_AUTH_MODE: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run generate:api-types
+      - run: git diff --exit-code -- src/lib/openapi-schema.ts
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --run
+      - run: npx playwright install --with-deps chromium
+      # Playwright's webServer runs `npm run build` + `next start`, so this also gates the production build.
+      - run: npx playwright test
+      - name: Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+          retention-days: 7
+
+  image:
+    needs: changes
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: famguard
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d famguard"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/docker/Dockerfile
+          tags: famguard-app:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Vulnerability scan (fail on fixable CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: famguard-app:ci
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+      - name: Image facts
+        run: |
+          docker image inspect famguard-app:ci --format 'size={{.Size}} user={{.Config.User}}'
+          test "$(docker run --rm --entrypoint id famguard-app:ci -u)" = "10001"
+      - name: Smoke test combined mode (healthz, readyz, signed cron)
+        run: |
+          docker run -d --name smoke --network host \
+            -e RUN_MODE=combined -e ENV=dev -e FAKE_EXTERNALS=1 -e MIGRATE_ON_START=1 \
+            -e PORT=8080 -e CRON_SECRET=ci-secret \
+            -e DATABASE_URL=postgresql://postgres:postgres@localhost:5432/famguard \
+            -e REDIS_URL=redis://localhost:6379/0 \
+            -e OPENAI_API_KEY=ci -e PINECONE_API_KEY=ci \
+            famguard-app:ci
+          for _ in $(seq 1 30); do
+            status="$(docker inspect smoke --format '{{.State.Health.Status}}')"
+            [ "$status" = "healthy" ] && break
+            sleep 5
+          done
+          docker inspect smoke --format '{{.State.Health.Status}}' | grep -qx healthy
+          curl -fsS http://localhost:8080/readyz
+          FAMGUARD_API_URL=http://localhost:8080 CRON_SECRET=ci-secret \
+            python3 infrastructure/scripts/trigger_expiry_sweep.py
+          sleep 5
+          docker logs smoke 2>&1 | grep -q "expiry sweep finished"
+          docker stop -t 20 smoke
+          test "$(docker inspect smoke --format '{{.State.ExitCode}}')" = "0"
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs smoke || true
+
+  deploy:
+    needs: [changes, secrets-scan, backend, worker, infra, frontend, image]
+    # Run on main only when no required job failed (skipped path-filtered jobs are fine).
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      !failure() && !cancelled()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    env:
+      RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ vars.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy API/worker to Render
+        if: env.RENDER_DEPLOY_HOOK_URL != '' && (needs.changes.outputs.image == 'true' || github.event_name == 'workflow_dispatch')
+        run: curl -fsS -X POST "$RENDER_DEPLOY_HOOK_URL" > /dev/null && echo "Render deploy triggered"
+      - uses: actions/setup-node@v4
+        if: env.VERCEL_TOKEN != '' && needs.changes.outputs.frontend == 'true'
+        with:
+          node-version: 22
+      - name: Deploy frontend to Vercel
+        if: env.VERCEL_TOKEN != '' && needs.changes.outputs.frontend == 'true'
+        working-directory: frontend
+        run: |
+          npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+          npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+          npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN"

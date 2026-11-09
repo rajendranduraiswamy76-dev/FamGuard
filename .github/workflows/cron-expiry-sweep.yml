@@ -1,0 +1,33 @@
+name: cron-expiry-sweep
+
+# Free-tier replacement for Celery Beat: Render free services sleep when idle, so this
+# wakes the API at midnight UTC and enqueues the sweep through the signed cron endpoint.
+# The daily call also keeps the Supabase free project from pausing for inactivity.
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cron-expiry-sweep
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: infrastructure/scripts
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Wake API and enqueue expiry sweep
+        env:
+          FAMGUARD_API_URL: ${{ vars.FAMGUARD_API_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: python infrastructure/scripts/trigger_expiry_sweep.py

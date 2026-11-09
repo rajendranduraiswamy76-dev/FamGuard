@@ -1,0 +1,119 @@
+# Local dev stack. Usage (from repo root):
+#   docker compose -f infrastructure/docker-compose.yml up -d --build              # postgres, redis, mailpit, api, worker
+#   docker compose -f infrastructure/docker-compose.yml --profile combined up -d   # + free-tier style single container
+# Defaults to offline services; configure infrastructure/.env for real OpenAI/Pinecone.
+# Alert emails land in Mailpit (http://localhost:8025).
+# Originals and the SQLite dev vector index persist on the shared vault volume.
+name: famguard
+
+x-app-env: &app-env
+  ENV: dev
+  FAKE_EXTERNALS: ${FAKE_EXTERNALS:-1}
+  LOG_LEVEL: INFO
+  DATABASE_URL: postgresql://postgres:postgres@postgres:5432/famguard
+  REDIS_URL: redis://redis:6379/0
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-fake}
+  PINECONE_API_KEY: ${PINECONE_API_KEY:-pc-fake}
+  PINECONE_INDEX: ${PINECONE_INDEX:-famguard-vault}
+  PINECONE_NAMESPACE: ${PINECONE_NAMESPACE:-family-vault}
+  CRON_SECRET: local-cron-secret
+  ALLOWED_ORIGINS: http://localhost:3000
+  # Required for authenticated routes; without them /api/* returns 503. Set in infrastructure/.env.
+  CLERK_JWKS_URL: ${CLERK_JWKS_URL:-}
+  CLERK_ISSUER: ${CLERK_ISSUER:-}
+  ALERT_FROM_EMAIL: FamGuard <alerts@famguard.local>
+  SMTP_URL: smtp://mailpit:1025
+  LOCAL_STORAGE_DIR: /data/vault
+  CELERY_TIMEZONE: UTC
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: infrastructure/docker/Dockerfile
+  image: famguard-app:dev
+  # Celery warm shutdown + uvicorn drain need a few seconds before SIGKILL.
+  stop_grace_period: 20s
+  volumes:
+    - vault:/data/vault
+    # Local API/worker edits need only a service restart; rebuild for dependency changes.
+    - ../backend-api/app:/opt/venv/lib/python3.11/site-packages/app:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    mailpit:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: famguard
+    ports:
+      # 5433 on the host avoids clashing with a locally installed Postgres.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d famguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"
+      - "1025:1025"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/livez"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      RUN_MODE: api
+      MIGRATE_ON_START: "1"
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      RUN_MODE: worker
+      WORKER_BEAT: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  combined:
+    <<: *app
+    profiles: ["combined"]
+    hostname: famguard-combined
+    environment:
+      <<: *app-env
+      RUN_MODE: combined
+      MIGRATE_ON_START: "1"
+    ports:
+      - "8001:8000"
+
+volumes:
+  pgdata:
+  vault:

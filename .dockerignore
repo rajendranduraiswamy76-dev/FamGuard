@@ -1,0 +1,40 @@
+# Build context is the repo root; only backend-api/, worker/ and infrastructure/docker are needed.
+
+# Secrets
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+
+# VCS / editors
+.git
+.github
+.idea
+.vscode
+**/.DS_Store
+
+# Python caches and envs
+.venv
+**/.venv
+**/venv
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage
+**/coverage.xml
+**/htmlcov
+
+# Node / frontend (deployed separately to Vercel)
+**/node_modules
+**/.next
+**/coverage
+frontend/
+
+# Docs and tests are not shipped
+docs/
+**/tests/
+**/IMPLEMENTATION_PLAN.md
