@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest",
     "test:e2e": "playwright test",
     "generate:api-types": "openapi-typescript ../backend-api/openapi.json -o src/lib/openapi-schema.ts"

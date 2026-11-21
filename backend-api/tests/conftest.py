@@ -58,11 +58,11 @@ def _clear_settings_cache() -> None:
 
 def pytest_asyncio_loop_factories(
     config: pytest.Config, item: pytest.Item
-) -> dict[str, Callable[[], asyncio.AbstractEventLoop]] | None:
+) -> dict[str, Callable[[], asyncio.AbstractEventLoop]]:
     # psycopg's async driver (LangGraph Postgres checkpointer) cannot run on the Proactor loop.
     if sys.platform == "win32":
         return {"selector": asyncio.SelectorEventLoop}
-    return None
+    return {"default": asyncio.new_event_loop}
 
 
 @pytest.fixture

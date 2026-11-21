@@ -147,7 +147,7 @@ jobs:
       - name: Cron trigger script tests
         working-directory: infrastructure
         run: |
-          pip install pytest
+          pip install pytest -e ../backend-api
           python -m pytest -q
       - name: Lint workflows
         run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.7 -color .github/workflows/*.yml
@@ -222,7 +222,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Vulnerability scan (fail on fixable CRITICAL)
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: famguard-app:ci
           severity: CRITICAL
