@@ -23,6 +23,7 @@ dev = [
   "freezegun>=1.5",
   "ruff>=0.8",
   "mypy>=1.13",
+  "asyncpg-stubs>=0.30",
 ]
 
 [tool.hatch.build.targets.wheel]

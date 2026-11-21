@@ -114,7 +114,9 @@ async def test_metrics_scoped_by_role(api: ApiHarness) -> None:
     assert admin_metrics["upcoming_expirations"][0]["member_name"] == "Ann"
     assert admin_metrics["open_reviews"] == 1
     assert admin_metrics["processing"] == 2
-    assert [item["document_name"] for item in admin_metrics["year_expirations"]] == ["Bob Insurance"]
+    assert [item["document_name"] for item in admin_metrics["year_expirations"]] == [
+        "Bob Insurance"
+    ]
 
     bob_metrics = (await api.client.get("/api/vault/metrics", headers=bob_h)).json()
     assert bob_metrics["documents_total"] == 1 and bob_metrics["vectors_total"] == 3
