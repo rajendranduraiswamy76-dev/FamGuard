@@ -273,13 +273,21 @@ class RAGEngine:
                 family_member_id=state["chat_filter"].member_id,
                 category=state["chat_filter"].category,
             )
-            allowed = {str(document.id): document.index_version for document in documents}
+            allowed = {str(document.id): document for document in documents}
             # Pinecone deletes are eventually consistent. Never answer from a held,
             # deleted or out-of-scope document even if its old vectors are returned.
+            # Older uploads may have stored the version only in the vector metadata.
             matches = [
                 match for match in matches
                 if (document_id := str(match.metadata.get("document_id", ""))) in allowed
-                and match.metadata.get("index_version") == allowed[document_id]
+                and (
+                    match.metadata.get("index_version") == allowed[document_id].index_version
+                    or (
+                        allowed[document_id].index_version is None
+                        and allowed[document_id].thread_id is not None
+                        and match.metadata.get("index_version") == allowed[document_id].thread_id
+                    )
+                )
             ]
             return {"contexts": matches, "sources": build_sources(matches)}
 

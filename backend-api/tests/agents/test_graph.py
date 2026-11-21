@@ -172,6 +172,7 @@ async def test_happy_path_upserts_vectors(db_pool: asyncpg.Pool) -> None:
     assert meta["family_member_id"] == str(h.member.id)
     assert meta["expiration_date"] == "2031-05-04"
     assert meta["is_primary"] is True
+    assert meta["index_version"] == stored.index_version == doc.thread_id
     assert set(h.extractor.calls[0]["categories"]) == set(ALLOWED)
 
     # Re-running a settled thread is a no-op.

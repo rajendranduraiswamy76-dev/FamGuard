@@ -495,7 +495,8 @@ class DocumentRepo:
             """UPDATE documents
                SET category_slug = $3, document_name = $4, expiration_date = $5,
                    requires_alert = $6, financial_value = $7, chunk_count = $8,
-                   status = 'completed', error = NULL, updated_at = now()
+                   index_version = thread_id, status = 'completed', error = NULL,
+                   updated_at = now()
                WHERE family_id = $1 AND id = $2 RETURNING *""",
             family_id, document_id, category_slug, document_name, expiration_date,
             requires_alert, _to_decimal(financial_value), chunk_count,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, ClassVar
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -204,6 +206,50 @@ async def _world(pool: asyncpg.Pool, resolver: Any = None,
 
 async def _collect(engine: RAGEngine, question: str, principal: Principal) -> list[dict[str, Any]]:
     return [e async for e in engine.stream(question, principal)]
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "index_version", "vector_version", "expected"),
+    [
+        ("ing-current", None, "ing-current", True),
+        ("ing-current", None, "ing-old", False),
+        ("ing-current", "ing-current", "ing-current", True),
+        ("ing-current", "ing-current", "ing-old", False),
+        ("ing-old", "ing-current", "ing-old", False),
+        (None, None, None, True),
+    ],
+)
+async def test_chat_checks_upload_index_version(
+    monkeypatch: pytest.MonkeyPatch, thread_id: str | None, index_version: str | None,
+    vector_version: str | None, expected: bool,
+) -> None:
+    principal = make_principal()
+    document_id = uuid4()
+    extraction = UnifiedVaultExtraction.model_validate({
+        "category": "miscellaneous", "document_name": "Muttukadu document",
+        "extracted_text": "Muttukadu", "requires_alert": False,
+        "confidence_score": 1.0,
+    })
+    embedder, index = FakeEmbedder(), InMemoryVectorIndex()
+    store = VectorStore(index, NS)
+    await store.upsert(build_records(
+        family_id=principal.family_id, family_member_id=principal.member_id,
+        document_id=document_id, extraction=extraction, chunks=["Muttukadu"],
+        vectors=await embedder.embed(["Muttukadu"]), source="upload",
+        index_version=vector_version,
+    ))
+    monkeypatch.setattr(MemberRepo, "list_all", AsyncMock(return_value=[]))
+    monkeypatch.setattr(CategoryRepo, "list_slugs", AsyncMock(return_value=["miscellaneous"]))
+    monkeypatch.setattr(DocumentRepo, "searchable_documents", AsyncMock(return_value=[
+        SimpleNamespace(id=document_id, thread_id=thread_id, index_version=index_version),
+    ]))
+    engine = RAGEngine(RAGDeps(
+        pool=MagicMock(), embedder=embedder, vectors=store,
+        resolver=KeywordContextResolver(), generator=TemplateAnswerGenerator(),
+    ))
+
+    events = await _collect(engine, "Muttukadu", principal)
+    assert bool(events[-1]["data"]) is expected
 
 
 @pytest.mark.integration
