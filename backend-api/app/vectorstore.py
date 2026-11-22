@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, TypedDict
 from uuid import UUID
 
 from app.config import Settings
-from app.embeddings import EMBEDDING_DIMENSIONS
+from app.embeddings import EMBEDDING_DIMENSIONS, OLLAMA_EMBEDDING_DIMENSIONS
 
 if TYPE_CHECKING:
     from app.agents.state import UnifiedVaultExtraction
@@ -142,14 +142,15 @@ def build_records(
     index_version: str | None = None,
     currency: str | None = None,
     financial_subcategory: str | None = None,
+    dimensions: int = EMBEDDING_DIMENSIONS,
 ) -> list[VectorRecord]:
     if vectors is not None and len(chunks) != len(vectors):
         raise ValueError("chunks and vectors must have the same length")
     records: list[VectorRecord] = []
     for index, chunk in enumerate(chunks):
         values = vectors[index] if vectors is not None else []
-        if vectors is not None and len(values) != EMBEDDING_DIMENSIONS:
-            raise ValueError(f"Vector {index} has {len(values)} dims, expected 1536")
+        if vectors is not None and len(values) != dimensions:
+            raise ValueError(f"Vector {index} has {len(values)} dims, expected {dimensions}")
         records.append(
             VectorRecord(
                 id=vector_id(document_id, index),
@@ -311,9 +312,12 @@ class DocumentSchemaIndex:
 
 
 class VectorStore:
-    def __init__(self, index: VectorIndex, namespace: str) -> None:
+    def __init__(
+        self, index: VectorIndex, namespace: str, dimensions: int = EMBEDDING_DIMENSIONS
+    ) -> None:
         self._index = index
         self._namespace = namespace
+        self.dimensions = dimensions
 
     @property
     def namespace(self) -> str:
@@ -329,9 +333,9 @@ class VectorStore:
 
     async def upsert(self, records: Sequence[VectorRecord]) -> int:
         if not self.integrated_embeddings and any(
-            len(record["values"]) != EMBEDDING_DIMENSIONS for record in records
+            len(record["values"]) != self.dimensions for record in records
         ):
-            raise ValueError("Vault chunks require 1536-dimensional vectors")
+            raise ValueError(f"Vault chunks require {self.dimensions}-dimensional vectors")
         for start in range(0, len(records), UPSERT_BATCH_SIZE):
             batch = [dict(r) for r in records[start : start + UPSERT_BATCH_SIZE]]
             await asyncio.to_thread(self._index.upsert, vectors=batch, namespace=self._namespace)
@@ -352,9 +356,9 @@ class VectorStore:
         if not 1 <= top_k <= MAX_TOP_K_WITH_METADATA:
             raise ValueError(f"top_k must be between 1 and {MAX_TOP_K_WITH_METADATA}")
         if not self.integrated_embeddings and (
-            vector is None or len(vector) != EMBEDDING_DIMENSIONS
+            vector is None or len(vector) != self.dimensions
         ):
-            raise ValueError(f"Query vector must have {EMBEDDING_DIMENSIONS} dimensions")
+            raise ValueError(f"Query vector must have {self.dimensions} dimensions")
         if isinstance(self._index, DocumentSchemaIndex):
             response = await asyncio.to_thread(
                 self._index.query, top_k=top_k, vector=list(vector) if vector is not None else [],
@@ -531,17 +535,42 @@ def matches_filter(metadata: Mapping[str, Any], flt: Mapping[str, Any]) -> bool:
 
 
 class SQLiteVectorIndex:
-    """Dev index shared by API and worker processes on the local vault volume."""
+    """Index shared by API and worker processes on the local filesystem."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, embedding_model: str | None = None,
+        dimensions: int = EMBEDDING_DIMENSIONS,
+    ) -> None:
         self._path = path
+        self._dimensions = dimensions
         path.parent.mkdir(parents=True, exist_ok=True)
         with closing(self._connect()) as conn, conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS vectors ("
                 "namespace TEXT NOT NULL, id TEXT NOT NULL, record TEXT NOT NULL, "
                 "PRIMARY KEY (namespace, id))"
             )
+            has_config = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'index_config'"
+            ).fetchone()
+            if embedding_model is None and has_config:
+                raise ValueError("Configured local vector index cannot be used as a fake index")
+            if embedding_model is not None:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS index_config "
+                    "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                existing = dict(conn.execute("SELECT key, value FROM index_config").fetchall())
+                expected = {"model": embedding_model, "dimensions": str(dimensions)}
+                if existing and existing != expected:
+                    raise ValueError("Local vector index embedding configuration differs")
+                if not existing:
+                    if conn.execute("SELECT 1 FROM vectors LIMIT 1").fetchone():
+                        raise ValueError(
+                            "Existing local vector index has no embedding configuration"
+                        )
+                    conn.executemany("INSERT INTO index_config VALUES (?, ?)", expected.items())
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self._path, timeout=30)
@@ -594,7 +623,7 @@ class SQLiteVectorIndex:
     def describe_index_stats(self) -> dict[str, Any]:
         with closing(self._connect()) as conn:
             count = conn.execute("SELECT count(*) FROM vectors").fetchone()[0]
-        return {"dimension": EMBEDDING_DIMENSIONS, "total_vector_count": count}
+        return {"dimension": self._dimensions, "total_vector_count": count}
 
 
 _fake_index = InMemoryVectorIndex()
@@ -608,6 +637,16 @@ def get_vector_store(settings: Settings) -> VectorStore:
                 settings.pinecone_namespace,
             )
         return VectorStore(_fake_index, settings.pinecone_namespace)
+    if settings.ai_provider == "ollama":
+        return VectorStore(
+            SQLiteVectorIndex(
+                Path(settings.local_vector_path),
+                embedding_model=settings.ollama_embedding_model,
+                dimensions=OLLAMA_EMBEDDING_DIMENSIONS,
+            ),
+            settings.pinecone_namespace,
+            dimensions=OLLAMA_EMBEDDING_DIMENSIONS,
+        )
     from pinecone import Pinecone
 
     client = Pinecone(api_key=settings.pinecone_api_key.get_secret_value())

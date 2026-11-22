@@ -11,9 +11,11 @@ from typing import Any, Final, Protocol
 import tiktoken
 
 from app.config import Settings
+from app.ollama import OllamaClient
 
 EMBEDDING_MODEL: Final = "text-embedding-3-small"
 EMBEDDING_DIMENSIONS: Final = 1536
+OLLAMA_EMBEDDING_DIMENSIONS: Final = 768
 EMBEDDING_BATCH_SIZE: Final = 100
 CHUNK_TOKENS: Final = 800
 CHUNK_OVERLAP_TOKENS: Final = 100
@@ -98,9 +100,49 @@ class FakeEmbedder:
         return [v / norm for v in raw]
 
 
+class OllamaEmbedder:
+    def __init__(self, client: OllamaClient, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    async def embed(self, texts: Sequence[str]) -> list[list[float]]:
+        return await self._embed(texts, prefix="search_document: ")
+
+    async def embed_query(self, query: str) -> list[float]:
+        return (await self._embed([query], prefix="search_query: "))[0]
+
+    async def _embed(self, texts: Sequence[str], *, prefix: str) -> list[list[float]]:
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), EMBEDDING_BATCH_SIZE):
+            batch = [prefix + text for text in texts[start : start + EMBEDDING_BATCH_SIZE]]
+            response = await self._client.request(
+                "/api/embed", {"model": self._model, "input": batch, "truncate": False}
+            )
+            data = response.get("embeddings")
+            if not isinstance(data, list) or len(data) != len(batch):
+                raise EmbeddingError(f"Expected {len(batch)} embeddings")
+            for vector in data:
+                if (not isinstance(vector, list) or len(vector) != OLLAMA_EMBEDDING_DIMENSIONS
+                        or not all(isinstance(v, int | float) and math.isfinite(v)
+                                   for v in vector)):
+                    raise EmbeddingError(
+                        f"Expected a finite {OLLAMA_EMBEDDING_DIMENSIONS}-dimensional embedding"
+                    )
+                vectors.append([float(v) for v in vector])
+        return vectors
+
+
+async def embed_query(embedder: Embedder, query: str) -> list[float]:
+    if isinstance(embedder, OllamaEmbedder):
+        return await embedder.embed_query(query)
+    return (await embedder.embed([query]))[0]
+
+
 def get_embedder(settings: Settings) -> Embedder:
     if settings.fake_externals:
         return FakeEmbedder()
+    if settings.ai_provider == "ollama":
+        return OllamaEmbedder(OllamaClient(settings.ollama_url), settings.ollama_embedding_model)
     from openai import AsyncOpenAI
 
     return OpenAIEmbedder(

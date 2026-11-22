@@ -1,0 +1,91 @@
+# Locked, synthetic-only VM bootstrap. This is not a usable private-family deployment.
+name: famguard-private
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: infrastructure/docker/Dockerfile
+  image: famguard-private-app:bootstrap
+  network_mode: host
+  restart: unless-stopped
+  volumes:
+    - vault:/data/vault
+  environment: &app-env
+    ENV: dev
+    FAKE_EXTERNALS: "0"
+    AI_PROVIDER: ollama
+    OLLAMA_URL: http://127.0.0.1:11434
+    OLLAMA_CHAT_MODEL: qwen2.5vl:3b
+    OLLAMA_EMBEDDING_MODEL: nomic-embed-text
+    LOCAL_VECTOR_PATH: /data/vault/.ollama-vectors.sqlite3
+    LOCAL_STORAGE_DIR: /data/vault
+    DATABASE_URL: postgresql://famguard:${POSTGRES_PASSWORD:?required}@127.0.0.1:5432/famguard
+    REDIS_URL: redis://127.0.0.1:6379/0
+    BIND_HOST: 127.0.0.1
+    ALLOWED_ORIGINS: http://localhost:3000
+    CLERK_JWKS_URL: ""
+    CLERK_ISSUER: ""
+    SMTP_URL: smtp://127.0.0.1:1025
+    ALERT_FROM_EMAIL: FamGuard <alerts@famguard.local>
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: famguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: famguard
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U famguard -d famguard"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports: ["127.0.0.1:6379:6379"]
+    volumes: ["redisdata:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
+  api:
+    <<: *app
+    environment:
+      <<: *app-env
+      RUN_MODE: api
+      MIGRATE_ON_START: "1"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      RUN_MODE: worker
+      WORKER_BEAT: "1"
+    depends_on:
+      api: {condition: service_healthy}
+  frontend:
+    build:
+      context: ..
+      dockerfile: infrastructure/docker/frontend.Dockerfile
+    image: famguard-private-frontend:bootstrap
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+
+volumes:
+  pgdata:
+  redisdata:
+  vault:

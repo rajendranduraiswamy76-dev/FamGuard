@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^7.9.17",
-    "next": "16.4.2",
+    "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "zod": "^4.6.7"
@@ -32,7 +32,7 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.1.2",
     "eslint": "^9",
-    "eslint-config-next": "16.4.2",
+    "eslint-config-next": "16.4.6",
     "jsdom": "^27.4.0",
     "msw": "^3.0.3",
     "openapi-typescript": "^7.13.0",

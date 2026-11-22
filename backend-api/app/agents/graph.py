@@ -266,6 +266,7 @@ def build_ingestion_graph(
             document_details=details,
             member_name=member_name,
             index_version=state["thread_id"],
+            dimensions=deps.vectors.dimensions,
         )
         # Clear chunks from any earlier partial run so stale ids cannot linger.
         await deps.vectors.delete_document(state["document_id"])

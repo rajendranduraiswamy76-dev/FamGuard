@@ -136,6 +136,7 @@ async def update_entry(
                 source="bulk", currency=body.currency, financial_subcategory=body.subcategory,
                 document_details=body.details, member_name=member.display_name,
                 index_version=version,
+                dimensions=vectors.dimensions,
             )
             # New IDs preserve the live version if an upsert fails partway through.
             for record in indexed:

@@ -252,6 +252,7 @@ class BulkImporter:
                 source="bulk",
                 currency=row.currency, financial_subcategory=row.subcategory,
                 document_details=row.details,
+                dimensions=self._vectors.dimensions,
             )
             offset += len(chunks)
 

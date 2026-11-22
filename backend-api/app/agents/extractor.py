@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from pydantic import ValidationError
 
 from app.agents.prompts import (
     EXTRACTION_TEXT_WRAPPER,
@@ -16,6 +17,7 @@ from app.agents.prompts import (
 )
 from app.agents.state import UnifiedVaultExtraction
 from app.config import Settings
+from app.ollama import OllamaClient
 from app.parsers import PreparedInput
 
 EXTRACTION_MODEL = "gpt-4o"
@@ -102,6 +104,41 @@ class OpenAIVisionExtractor:
         )
 
 
+class OllamaVisionExtractor:
+    def __init__(self, client: OllamaClient, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    async def extract(
+        self, prepared: PreparedInput, *, categories: Sequence[str], filename: str
+    ) -> ExtractionResult:
+        if not prepared.text and not prepared.images:
+            raise ExtractionError("Nothing to extract: no text and no images")
+        content = EXTRACTION_USER_PROMPT.format(filename=filename)
+        if prepared.text:
+            content += "\n" + EXTRACTION_TEXT_WRAPPER.format(text=prepared.text)
+        response = await self._client.request("/api/chat", {
+            "model": self._model,
+            "stream": False,
+            "format": UnifiedVaultExtraction.model_json_schema(),
+            "options": {"temperature": 0},
+            "messages": [
+                {"role": "system", "content": render_extraction_system_prompt(categories)},
+                {"role": "user", "content": content,
+                 "images": [base64.b64encode(image).decode("ascii") for image in prepared.images]},
+            ],
+        })
+        try:
+            parsed = UnifiedVaultExtraction.model_validate_json(response["message"]["content"])
+        except (KeyError, TypeError, ValidationError) as exc:
+            raise ExtractionError("Model returned an invalid extraction") from exc
+        return ExtractionResult(
+            extraction=parsed, expiration_raw=parsed.expiration_raw,
+            prompt_tokens=int(response.get("prompt_eval_count", 0)),
+            completion_tokens=int(response.get("eval_count", 0)),
+        )
+
+
 class FakeExtractor:
     """Deterministic extractor for FAKE_EXTERNALS mode and tests."""
 
@@ -141,4 +178,6 @@ def _default_fake_response(filename: str, prepared: PreparedInput) -> dict[str, 
 def get_extractor(settings: Settings) -> MetadataExtractor:
     if settings.fake_externals:
         return FakeExtractor()
+    if settings.ai_provider == "ollama":
+        return OllamaVisionExtractor(OllamaClient(settings.ollama_url), settings.ollama_chat_model)
     return OpenAIVisionExtractor.from_settings(settings)

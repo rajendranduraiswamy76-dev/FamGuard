@@ -33,10 +33,19 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # OpenAI / Pinecone
-    openai_api_key: SecretStr
-    pinecone_api_key: SecretStr
+    openai_api_key: SecretStr = SecretStr("")
+    pinecone_api_key: SecretStr = SecretStr("")
     pinecone_index: str = "famguard-vault"
     pinecone_namespace: str = "family-vault"
+
+    # Local AI is opt-in; the rest of the application may still use external services.
+    ai_provider: Literal["openai", "ollama"] = "openai"
+    ollama_url: Literal["http://127.0.0.1:11434", "http://localhost:11434"] = (
+        "http://127.0.0.1:11434"
+    )
+    ollama_chat_model: str = "qwen2.5vl:3b"
+    ollama_embedding_model: Literal["nomic-embed-text"] = "nomic-embed-text"
+    local_vector_path: str = ""
 
     # Cloudflare R2
     r2_account_id: str = ""
@@ -82,11 +91,17 @@ class Settings(BaseSettings):
         if self.db_pool_min_size > self.db_pool_max_size:
             raise ValueError("DB_POOL_MIN_SIZE cannot exceed DB_POOL_MAX_SIZE")
         if not self.fake_externals:
+            if self.ai_provider == "ollama" and not self.local_vector_path:
+                raise ValueError("OLLAMA requires LOCAL_VECTOR_PATH to avoid remote embeddings")
+            if self.ai_provider == "openai" and self.local_vector_path:
+                raise ValueError("LOCAL_VECTOR_PATH requires AI_PROVIDER=ollama")
             missing_ai_keys = [
                 name for name, secret, placeholder in (
                     ("OPENAI_API_KEY", self.openai_api_key, "sk-fake"),
                     ("PINECONE_API_KEY", self.pinecone_api_key, "pc-fake"),
                 )
+                if (name != "OPENAI_API_KEY" or self.ai_provider == "openai")
+                and (name != "PINECONE_API_KEY" or not self.local_vector_path)
                 if not secret.get_secret_value().strip()
                 or secret.get_secret_value().strip() == placeholder
             ]
@@ -94,6 +109,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Real services require configured keys: " + ", ".join(missing_ai_keys)
                 )
+        if self.env == "prod" and self.local_vector_path:
+            raise ValueError("LOCAL_VECTOR_PATH is not yet supported when ENV=prod")
         if self.env == "prod":
             if self.fake_externals:
                 raise ValueError("FAKE_EXTERNALS is not allowed when ENV=prod")

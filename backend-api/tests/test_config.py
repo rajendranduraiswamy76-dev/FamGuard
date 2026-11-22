@@ -26,7 +26,8 @@ PROD_REQUIRED = {
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     for key in ("ENV", "DATABASE_URL", "OPENAI_API_KEY", "PINECONE_API_KEY", "FAKE_EXTERNALS",
-                "ALLOWED_ORIGINS", "RUN_MODE", "PORT", "SMTP_URL", "LOCAL_STORAGE_DIR"):
+                "ALLOWED_ORIGINS", "RUN_MODE", "PORT", "SMTP_URL", "LOCAL_STORAGE_DIR",
+                "AI_PROVIDER", "LOCAL_VECTOR_PATH", "OLLAMA_URL", "OLLAMA_EMBEDDING_MODEL"):
         monkeypatch.delenv(key, raising=False)
     return monkeypatch
 
@@ -132,3 +133,24 @@ def test_offline_mode_allows_placeholder_keys(env: pytest.MonkeyPatch) -> None:
     _set(env, {**BASE, "FAKE_EXTERNALS": "1",
                "OPENAI_API_KEY": "sk-fake", "PINECONE_API_KEY": "pc-fake"})
     assert _settings().fake_externals
+
+
+def test_ollama_requires_a_local_index_and_no_cloud_ai_keys(env: pytest.MonkeyPatch) -> None:
+    _set(env, {"DATABASE_URL": BASE["DATABASE_URL"], "AI_PROVIDER": "ollama"})
+    with pytest.raises(ValidationError, match="LOCAL_VECTOR_PATH"):
+        _settings()
+    env.setenv("LOCAL_VECTOR_PATH", "vectors.sqlite3")
+    assert _settings().ai_provider == "ollama"
+
+
+def test_ollama_rejects_remote_endpoint_and_production(
+    env: pytest.MonkeyPatch,
+) -> None:
+    _set(env, {"DATABASE_URL": BASE["DATABASE_URL"], "AI_PROVIDER": "ollama",
+               "LOCAL_VECTOR_PATH": "vectors.sqlite3", "OLLAMA_URL": "http://example.com:11434"})
+    with pytest.raises(ValidationError, match="ollama_url"):
+        _settings()
+    env.setenv("OLLAMA_URL", "http://127.0.0.1:11434")
+    env.setenv("ENV", "prod")
+    with pytest.raises(ValidationError, match="LOCAL_VECTOR_PATH"):
+        _settings()

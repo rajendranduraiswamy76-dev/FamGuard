@@ -26,7 +26,8 @@ from app.agents.prompts import (
 )
 from app.agents.state import ChatFilter, SourceRef
 from app.config import Settings
-from app.embeddings import Embedder
+from app.embeddings import Embedder, embed_query
+from app.ollama import OllamaClient
 from app.repositories import CategoryRepo, DocumentRepo, FamilyMember, MemberRepo
 from app.security import Principal
 from app.vectorstore import VectorMatch, VectorStore, build_filter
@@ -102,6 +103,43 @@ class OpenAIAnswerGenerator:
             content = chunk.content
             if isinstance(content, str) and content:
                 yield content
+
+
+class OllamaContextResolver:
+    def __init__(self, client: OllamaClient, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    async def resolve(
+        self, question: str, *, member_names: Sequence[str], categories: Sequence[str]
+    ) -> ContextResolution:
+        system = CONTEXT_RESOLVER_SYSTEM_PROMPT.format(
+            members="\n".join(f"- {n}" for n in member_names) or "- (none)",
+            categories="\n".join(f"- {c}" for c in categories),
+        )
+        response = await self._client.request("/api/chat", {
+            "model": self._model, "stream": False,
+            "format": ContextResolution.model_json_schema(),
+            "options": {"temperature": 0},
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": question}],
+        })
+        return ContextResolution.model_validate_json(response["message"]["content"])
+
+
+class OllamaAnswerGenerator:
+    def __init__(self, client: OllamaClient, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    async def stream(self, question: str, contexts: Sequence[VectorMatch]) -> AsyncIterator[str]:
+        messages = [
+            {"role": "system", "content": RAG_SYSTEM_PROMPT},
+            {"role": "user",
+             "content": f"{render_context_block(contexts)}\n\nQuestion: {question}"},
+        ]
+        async for token in self._client.chat_stream(self._model, messages):
+            yield token
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +293,7 @@ class RAGEngine:
         async def retrieve(state: RAGGraphState) -> dict[str, Any]:
             vector = (
                 None if deps.vectors.integrated_embeddings
-                else (await deps.embedder.embed([state["question"]]))[0]
+                else await embed_query(deps.embedder, state["question"])
             )
             matches = await deps.vectors.query(
                 vector, filter=state["pinecone_filter"], top_k=deps.top_k,
@@ -331,6 +369,11 @@ def get_rag_engine_deps(
     if settings.fake_externals:
         return RAGDeps(pool=pool, embedder=embedder, vectors=vectors,
                        resolver=KeywordContextResolver(), generator=TemplateAnswerGenerator())
+    if settings.ai_provider == "ollama":
+        client = OllamaClient(settings.ollama_url)
+        return RAGDeps(pool=pool, embedder=embedder, vectors=vectors,
+                       resolver=OllamaContextResolver(client, settings.ollama_chat_model),
+                       generator=OllamaAnswerGenerator(client, settings.ollama_chat_model))
     from langchain_openai import ChatOpenAI
 
     key = settings.openai_api_key

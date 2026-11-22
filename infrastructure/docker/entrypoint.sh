@@ -9,7 +9,7 @@ MODE="${RUN_MODE:-api}"
 PORT="${PORT:-8000}"
 
 api_cmd=(uvicorn app.api.main:app
-  --host 0.0.0.0 --port "${PORT}"
+  --host "${BIND_HOST:-0.0.0.0}" --port "${PORT}"
   --proxy-headers --forwarded-allow-ips "*"
   --workers "${WEB_CONCURRENCY:-1}"
   --timeout-graceful-shutdown 8

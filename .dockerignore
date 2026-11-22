@@ -6,6 +6,7 @@
 **/.env
 **/.env.*
 !.env.example
+**/.private-bootstrap.env
 
 # VCS / editors
 .git
@@ -28,11 +29,10 @@
 **/coverage.xml
 **/htmlcov
 
-# Node / frontend (deployed separately to Vercel)
+# Node build outputs
 **/node_modules
 **/.next
 **/coverage
-frontend/
 
 # Docs and tests are not shipped
 docs/

@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.private-bootstrap.env
 
 # Python
 __pycache__/
